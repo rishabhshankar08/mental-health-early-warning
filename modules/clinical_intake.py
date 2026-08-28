@@ -27,12 +27,7 @@ GAD7_ITEMS = [
     "Becoming easily annoyed or irritable",
     "Feeling afraid, as if something awful might happen",
 ]
-OPTIONS = [
-    "Not at all",
-    "Several days",
-    "More than half the days",
-    "Nearly every day",
-]
+SCALE_LABELS = "0.0 Not at all · 1.0 Several days · 2.0 More than half the days · 3.0 Nearly every day"
 
 
 class ClinicalIntakeModule:
@@ -45,19 +40,19 @@ class ClinicalIntakeModule:
     def render(self) -> dict[str, Any] | None:
         """Render the intake form and return a payload after explicit submission."""
         st.subheader("How are things feeling lately?")
-        st.caption("For each line, choose the answer that feels closest to your experience over the last two weeks.")
+        st.caption("For each line, move the slider between the four anchors. The in-between values let you describe intensity more precisely.")
         with st.form("clinical_intake_form", clear_on_submit=False):
-            phq_values: list[int] = []
+            phq_values: list[float] = []
             st.markdown("**Mood, energy, and daily life**")
+            st.caption(SCALE_LABELS)
             for index, question in enumerate(PHQ9_ITEMS):
-                selected = st.select_slider(question, options=OPTIONS, value=OPTIONS[0], key=f"phq_{index}")
-                phq_values.append(OPTIONS.index(selected))
+                phq_values.append(float(st.slider(question, min_value=0.0, max_value=3.0, value=0.0, step=0.1, key=f"phq_{index}", format="%.1f")))
             st.markdown("**Worry and ease**")
-            gad_values: list[int] = []
+            gad_values: list[float] = []
+            st.caption(SCALE_LABELS)
             for index, question in enumerate(GAD7_ITEMS):
                 key = f"gad_{index}"
-                selected = st.select_slider(question, options=OPTIONS, value=OPTIONS[0], key=key)
-                gad_values.append(OPTIONS.index(selected))
+                gad_values.append(float(st.slider(question, min_value=0.0, max_value=3.0, value=0.0, step=0.1, key=key, format="%.1f")))
             journal = st.text_area(
                 "Anything else you’d like to put into words?",
                 placeholder="Share only what you are comfortable sharing.",
@@ -66,15 +61,20 @@ class ClinicalIntakeModule:
             submitted = st.form_submit_button("Continue", type="primary", use_container_width=True)
         if not submitted:
             return None
-        phq_score = sum(phq_values)
-        gad_score = sum(gad_values)
+        phq_score = round(sum(phq_values), 1)
+        gad_score = round(sum(gad_values), 1)
         total = phq_score + gad_score
         maximum = self.phq_max + self.gad_max
+        all_values = phq_values + gad_values
+        moderate_or_higher = sum(value >= 1.5 for value in all_values)
         return {
             "phq9_responses": phq_values,
             "gad7_responses": gad_values,
             "phq9_total": phq_score,
             "gad7_total": gad_score,
+            "average_intensity": round(total / len(all_values), 2),
+            "moderate_or_higher_share": round(moderate_or_higher / len(all_values) * 100, 1),
+            "depression_anxiety_balance": round((phq_score / self.phq_max) - (gad_score / self.gad_max), 2),
             "clinical_score": round(total / maximum * 100, 1),
             "journal": journal.strip(),
         }

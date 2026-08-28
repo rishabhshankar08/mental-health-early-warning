@@ -33,6 +33,7 @@ class NLPLinguisticParser:
     }
 
     def analyze(self, text: str) -> dict[str, Any]:
+        has_text = bool(text.strip())
         tokens = re.findall(r"[a-zA-Z]+", text.lower())
         count = max(len(tokens), 1)
         sentences = [sentence.strip() for sentence in re.split(r"[.!?]+", text) if sentence.strip()]
@@ -59,7 +60,7 @@ class NLPLinguisticParser:
             tone = "finding some steadier ground"
         else:
             tone = "mixed or hard to read from a short note"
-        interpretation = self._interpretation(tone, active_themes, len(sentences))
+        interpretation = self._interpretation(tone, active_themes, len(sentences), has_text)
         return {
             "linguistic_score": round(score, 1),
             "token_count": len(tokens),
@@ -80,12 +81,15 @@ class NLPLinguisticParser:
             "tone": tone,
             "interpretation": interpretation,
             "comfort_message": self._comfort_message(tone, active_themes),
+            "has_text": has_text,
         }
 
     @staticmethod
-    def _interpretation(tone: str, themes: list[str], sentence_count: int) -> str:
+    def _interpretation(tone: str, themes: list[str], sentence_count: int, has_text: bool) -> str:
+        if not has_text:
+            return "No writing was provided, so there is no language signal to interpret. Your other check-in responses are still available for the support summary."
         if not themes:
-            return f"This is a short note, so there is not much language to interpret. The overall tone comes across as {tone}."
+            return f"There were no strong topic markers in this note. The overall tone comes across as {tone}."
         readable_themes = ", ".join(themes)
         return f"The note sounds {tone}, with the clearest threads around {readable_themes}. This is a language pattern, not a verdict about how you are feeling."
 

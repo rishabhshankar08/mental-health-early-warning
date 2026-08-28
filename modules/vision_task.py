@@ -27,6 +27,8 @@ class LiveFocusProcessor(VideoProcessorBase):
         self.blinks = 0
         self.frames = 0
         self.valid_frames = 0
+        self.openness_baseline: float | None = None
+        self.closed_frames = 0
         self.pupil_values: list[float] = []
         self.gaze_values: list[float] = []
 
@@ -43,32 +45,32 @@ class LiveFocusProcessor(VideoProcessorBase):
         (center_x, _), radius = cv2.minEnclosingCircle(pupil)
         return max(radius * 2, 1) / max(eye_width, 1), center_x / max(eye_width, 1)
 
-    def _metrics_from_frame(self, image: np.ndarray) -> tuple[float, float, float] | None:
+    def _metrics_from_frame(self, image: np.ndarray) -> tuple[tuple[float, float, float] | None, bool]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         faces = self.face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
         if len(faces) == 0:
-            return None
+            return None, False
         face_x, face_y, face_width, face_height = max(faces, key=lambda item: item[2] * item[3])
         upper_face = gray[face_y:face_y + face_height // 2, face_x:face_x + face_width]
         eyes = sorted(self.eye_detector.detectMultiScale(upper_face, scaleFactor=1.1, minNeighbors=6, minSize=(25, 18)), key=lambda item: item[0])[:2]
         if len(eyes) < 2:
-            return None
+            return None, True
         pupil_metrics: list[tuple[float, float]] = []
         eye_ratios: list[float] = []
         for eye_x, eye_y, eye_width, eye_height in eyes:
             metrics = self._pupil_metrics(upper_face[eye_y:eye_y + eye_height, eye_x:eye_x + eye_width])
             if metrics is None:
-                return None
+                return None, True
             pupil_metrics.append(metrics)
             eye_ratios.append(eye_height / max(eye_width, 1))
         pupil_size = float(np.mean([metric[0] for metric in pupil_metrics]))
         gaze_attention = 1 - min(1, abs(float(np.mean([metric[1] for metric in pupil_metrics])) - 0.5) * 2)
         ear = float(np.mean(eye_ratios))
-        return pupil_size, float(np.clip(gaze_attention, 0, 1)), ear
+        return (pupil_size, float(np.clip(gaze_attention, 0, 1)), ear), True
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         image = frame.to_ndarray(format="bgr24")
-        metrics = self._metrics_from_frame(image)
+        metrics, face_visible = self._metrics_from_frame(image)
         now = time.monotonic()
         with self.lock:
             self.frames += 1
@@ -77,13 +79,26 @@ class LiveFocusProcessor(VideoProcessorBase):
                 self.pupil_values.append(pupil_size)
                 self.gaze_values.append(gaze_attention)
                 self.valid_frames += 1
-                is_closed = ear < 0.21
-                if is_closed and not self.eyes_closed and now - self.last_blink_at > 0.25:
+                if self.openness_baseline is None:
+                    self.openness_baseline = ear
+                elif not self.eyes_closed:
+                    self.openness_baseline = (self.openness_baseline * 0.98) + (ear * 0.02)
+                closure_threshold = max(self.openness_baseline * 0.68, 0.08)
+                is_closed = ear < closure_threshold
+                if is_closed:
+                    self.closed_frames += 1
+                elif self.eyes_closed and self.closed_frames >= 2 and now - self.last_blink_at > 0.25:
                     self.blinks += 1
                     self.last_blink_at = now
+                    self.closed_frames = 0
                 self.eyes_closed = is_closed
-                cv2.putText(image, f"eye openness proxy {ear:.2f}  blinks {self.blinks}", (18, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (242, 192, 120), 2)
+                cv2.putText(image, f"eye openness {ear:.2f} / baseline {self.openness_baseline:.2f}  blinks {self.blinks}", (18, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (242, 192, 120), 2)
+            elif face_visible and self.openness_baseline is not None:
+                self.closed_frames += 1
+                self.eyes_closed = True
+                cv2.putText(image, f"eyes closed/not detected  blinks {self.blinks}", (18, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (242, 192, 120), 2)
             else:
+                self.closed_frames = 0
                 cv2.putText(image, "Face not detected - adjust lighting", (18, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 210, 190), 2)
         return av.VideoFrame.from_ndarray(image, format="bgr24")
 
@@ -101,6 +116,7 @@ class LiveFocusProcessor(VideoProcessorBase):
                 "physio_score": round(float(score), 1),
                 "pupillometry_variance": round(pupil_variance, 5),
                 "blink_rate_per_minute": round(float(blink_rate), 1),
+                "blink_count": self.blinks,
                 "gaze_attention": round(gaze_attention, 3),
                 "samples": len(self.pupil_values),
                 "frames": self.frames,
@@ -142,10 +158,25 @@ class VisionTaskModule:
             "data_collected": False,
         }
 
+    @staticmethod
+    def _camera_no_measurement() -> dict[str, float | str | bool]:
+        return {
+            "physio_score": 50.0,
+            "pupillometry_variance": "not available",
+            "blink_rate_per_minute": "not available",
+            "gaze_attention": 0.5,
+            "source": "camera active; no usable eye measurements",
+            "ready": False,
+            "data_collected": True,
+            "measurement_status": "camera_active_no_measurement",
+        }
+
     def render(self) -> dict[str, Any]:
         st.subheader("A moment to reset")
         st.write("Allow camera access and keep your face in view for a few seconds. The live stream measures iris size, blink rhythm, and gaze position locally.")
         st.caption("Frames are processed in memory and never saved. The stream needs camera permission and a secure browser context.")
+        st.info("The camera check is ready after at least 10 seconds of continuous video, 30 usable eye-detection frames, and 50% of frames successfully detecting your eyes.")
+        st.caption("You do not need to stay for 30 seconds. The 10-second minimum helps make the blink-rate estimate more meaningful.")
         try:
             context = webrtc_streamer(
                 key="focus-camera-stream",
@@ -172,12 +203,16 @@ class VisionTaskModule:
                 metrics[0].metric("Blink rate", f"{result['blink_rate_per_minute']}/min" if result["ready"] else "Collecting")
                 metrics[1].metric("Iris-size variance", result["pupillometry_variance"])
                 metrics[2].metric("Gaze attention", f"{float(result['gaze_attention']):.0%}")
-                st.caption(f"Quality: {float(result['detection_rate']):.0%} of {result['frames']} video frames contained a usable eye detection. The displayed eye openness is an OpenCV proxy, not clinical-grade EAR.")
+                st.caption(f"Detected {result['blink_count']} completed blink(s) across {result['elapsed_seconds']:.1f} seconds. Quality: {float(result['detection_rate']):.0%} of {result['frames']} video frames contained usable eye detections. Eye openness is an adaptive OpenCV proxy, not clinical-grade EAR.")
                 if result["ready"] and st.button("Use live webcam signal", type="primary", use_container_width=True):
                     st.session_state.vision_result = result
                     st.rerun()
                 return result
             st.info("Start the stream and keep your face visible while metrics collect.")
+            return self._camera_no_measurement()
+
+        if context is not None and context.state.playing:
+            return self._camera_no_measurement()
 
         st.divider()
         st.caption("No camera? You can continue with a clearly labeled simulation.")

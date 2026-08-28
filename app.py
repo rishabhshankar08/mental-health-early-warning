@@ -59,7 +59,7 @@ def show_home() -> None:
             st.markdown(f"- {step}")
         st.warning("If you are in immediate danger, may act on thoughts of self-harm, or cannot keep yourself safe, stop here and contact local emergency services or a crisis line. Ask someone you trust to stay with you.")
         linguistic_result = result.get("linguistic", {})
-        if linguistic_result.get("comfort_message"):
+        if linguistic_result.get("has_text") and linguistic_result.get("comfort_message"):
             st.markdown("**A note for you**")
             st.success(linguistic_result["comfort_message"])
         cols = st.columns(3)
@@ -70,7 +70,8 @@ def show_home() -> None:
         with st.expander("1. Your answers · clinical backbone", expanded=False):
             clinical_detail = result.get("clinical")
             if clinical_detail:
-                st.write(f"PHQ-9 total: {clinical_detail['phq9_total']} out of 27. GAD-7 total: {clinical_detail['gad7_total']} out of 21. Together, {clinical_detail['phq9_total'] + clinical_detail['gad7_total']} points out of 48 becomes a clinical score of {fusion['components']['clinical']:.1f}/100. This component carries the primary 60% weight, contributing {fusion['contributions']['clinical']:.1f} points to the composite.")
+                st.write(f"Your PHQ-9 responses total {clinical_detail['phq9_total']:.1f} out of 27 and your GAD-7 responses total {clinical_detail['gad7_total']:.1f} out of 21. Together, that is a clinical score of {fusion['components']['clinical']:.1f}/100. This is the primary component, carrying 60% of the composite and contributing {fusion['contributions']['clinical']:.1f} points.")
+                st.write(f"Across all 16 questions, your average slider intensity was {clinical_detail['average_intensity']:.2f} out of 3.0, and {clinical_detail['moderate_or_higher_share']:.1f}% of responses were at least halfway between 'Several days' and 'More than half the days'. The depression/anxiety balance was {clinical_detail['depression_anxiety_balance']:+.2f}; positive values lean toward the depression items, negative values toward the anxiety items. These are descriptive patterns, not separate diagnoses.")
             else:
                 st.write(f"The clinical self-report score is {fusion['components']['clinical']:.1f}/100 and contributes {fusion['contributions']['clinical']:.1f} points at the primary 60% weight. Detailed totals are available for new check-ins.")
             st.caption("The individual responses are used for this private result but are not sent to the institutional aggregate dashboard.")
@@ -79,15 +80,24 @@ def show_home() -> None:
             blink_rate = vision_result.get("blink_rate_per_minute", "unavailable")
             if vision_result.get("data_collected", True) is False:
                 st.write("The camera was not used for this check-in. No physiological data was collected, so the model uses a neutral midpoint of 50/100 for this optional component. That contributes 10 points at the 20% weight rather than pretending simulated values came from you.")
+            elif vision_result.get("measurement_status") == "camera_active_no_measurement":
+                st.write("The camera was active, but no usable eye measurements were obtained. The physiological component stays at a neutral 50/100 and this check-in cannot be submitted until the camera detects your eyes clearly.")
             else:
-                st.write(f"The continuous stream produced {vision_result.get('samples', 'an unspecified number')} usable eye samples from {vision_result.get('frames', 'an unspecified number')} video frames over {vision_result.get('elapsed_seconds', 'an unspecified duration')} seconds. Blink rate was {blink_rate} per minute, normalized iris-size variance was {vision_result['pupillometry_variance']}, and gaze attention was {float(vision_result['gaze_attention']):.0%}. These derived values produce a physiological score of {fusion['components']['physiological']:.1f}/100 and contribute {fusion['contributions']['physiological']:.1f} points at the 20% weight.")
+                st.write(f"The continuous stream produced {vision_result.get('samples', 'an unspecified number')} usable eye samples from {vision_result.get('frames', 'an unspecified number')} video frames over {vision_result.get('elapsed_seconds', 'an unspecified duration')} seconds. It detected {vision_result.get('blink_count', 0)} completed blink(s), estimating {blink_rate} per minute. Normalized iris-size variance was {vision_result['pupillometry_variance']}, and gaze attention was {float(vision_result['gaze_attention']):.0%}. These derived values produce a physiological score of {fusion['components']['physiological']:.1f}/100 and contribute {fusion['contributions']['physiological']:.1f} points at the 20% weight.")
             st.caption("Blink rate is estimated from closure transitions over the continuous stream. Iris size and eye openness are webcam proxies, not calibrated clinical measurements. Video frames are not stored.")
+            with st.expander("What this webcam signal means", expanded=False):
+                st.write("The optional check watches a short, continuous video stream. Each frame is processed in memory to look for a face, two eye regions, approximate iris size, eye openness, and horizontal gaze position.")
+                st.write("Because the frames arrive over time, the system can count transitions from open eyes to closed eyes and estimate blinks per minute. Variation in normalized iris size and gaze position is summarized as a contextual physiological signal.")
+                st.write("This can add context around changes in attention, eye behavior, or fatigue-related patterns. It cannot prove depression, anxiety, burnout, fatigue, or any other condition. Lighting, camera quality, glasses, face angle, occlusion, and detector errors can affect the measurements.")
+                st.write("The app requires a minimum observation window and detection quality before accepting webcam data. If eyes cannot be measured, the result says so instead of labeling the camera as unused. If no camera is used, the physiological component receives a neutral midpoint rather than a fabricated personal measurement.")
+                st.caption("Frames are processed locally and are not saved. This signal is for supportive context only and should never be used as a diagnosis or as the sole basis for a decision about a person.")
         with st.expander("3. Writing patterns · linguistic signal"):
             linguistic_result = st.session_state.last_result["linguistic"]
             st.write(linguistic_result.get("interpretation", "This language signal is based on a few explainable word patterns, not a diagnosis."))
             if linguistic_result.get("active_themes"):
                 st.write(f"The clearest themes were: {', '.join(linguistic_result['active_themes'])}.")
             st.write(f"The language signal was {fusion['components']['linguistic']:.1f}/100. It contributes a smaller 20% context to the overall support signal. The pattern combines first-person focus, absolute wording, and negative-emotion language; positive language is shown as context and does not cancel out a difficult experience.")
+            st.write(linguistic_result.get("score_reason", "The language signal uses bounded, explainable word counts rather than word-count density alone."))
             st.write(linguistic_result.get("score_reason", "The language signal uses bounded, explainable word counts rather than word-count density alone."))
             with st.expander("Show the underlying counts", expanded=False):
                 st.write(f"{linguistic_result['token_count']} words across {linguistic_result.get('sentence_count', 'an unknown number')} sentences. First-person terms: {linguistic_result['first_person_count']} ({linguistic_result['first_person_frequency']:.1f}%). Absolutist terms: {linguistic_result['absolutist_count']} ({linguistic_result['absolutist_frequency']:.1f}%). Negative-emotion terms: {linguistic_result['negative_emotion_count']} ({linguistic_result['negative_emotion_density']:.1f}%). Positive-emotion terms: {linguistic_result.get('positive_emotion_count', 0)} ({linguistic_result.get('positive_emotion_density', 0):.1f}%).")
@@ -124,7 +134,13 @@ def show_home() -> None:
             "fusion": result,
             "linguistic": linguistic,
             "vision": vision,
-            "clinical": {"phq9_total": payload["phq9_total"], "gad7_total": payload["gad7_total"]},
+            "clinical": {
+                "phq9_total": payload["phq9_total"],
+                "gad7_total": payload["gad7_total"],
+                "average_intensity": payload["average_intensity"],
+                "moderate_or_higher_share": payload["moderate_or_higher_share"],
+                "depression_anxiety_balance": payload["depression_anxiety_balance"],
+            },
         }
         st.session_state.pop("clinical_payload", None)
         st.rerun()
